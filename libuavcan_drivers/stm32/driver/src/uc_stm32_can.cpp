@@ -21,6 +21,7 @@
 # error "Unknown OS"
 #endif
 
+#if !defined(STM32F0XX)
 #if (UAVCAN_STM32_CHIBIOS && CH_KERNEL_MAJOR == 2) || UAVCAN_STM32_BAREMETAL
 # if !(defined(STM32F10X_CL) || defined(STM32F2XX) || defined(STM32F3XX)  || defined(STM32F4XX))
 // IRQ numbers
@@ -42,6 +43,10 @@
 #define CAN2_RX0_IRQHandler     STM32_CAN2_RX0_HANDLER
 #define CAN2_RX1_IRQHandler     STM32_CAN2_RX1_HANDLER
 #endif
+#else
+#define CAN1_UNIFIED_HANDLER STM32_CAN1_UNIFIED_HANDLER
+#define CAN1_UNIFIED_IRQn STM32_CAN1_UNIFIED_NUMBER
+#endif
 
 #if UAVCAN_STM32_NUTTX
 # if !defined(STM32_IRQ_CAN1TX) && !defined(STM32_IRQ_CAN1RX0)
@@ -58,7 +63,7 @@ static int can2_irq(const int irq, void*);
 #endif
 
 /* STM32F3's only CAN inteface does not have a number. */
-#if defined(STM32F3XX)
+#if defined(STM32F3XX) || defined(STM32F0XX)
 #define RCC_APB1ENR_CAN1EN     RCC_APB1ENR_CANEN
 #define RCC_APB1RSTR_CAN1RST   RCC_APB1RSTR_CANRST
 #define CAN1_TX_IRQn           CAN_TX_IRQn
@@ -551,7 +556,7 @@ bool CanIface::waitMsrINakBitStateChange(bool target_state)
         ::usleep(1000);
 #endif
 #if UAVCAN_STM32_CHIBIOS
-        ::chThdSleep(MS2ST(1));
+        ::chThdSleepMilliseconds(1);
 #endif
 #if UAVCAN_STM32_FREERTOS
         ::osDelay(1);
@@ -1023,9 +1028,13 @@ void CanDriver::initOnce()
 #elif UAVCAN_STM32_CHIBIOS || UAVCAN_STM32_BAREMETAL || UAVCAN_STM32_FREERTOS
     {
         CriticalSectionLocker lock;
+#if defined(CAN1_UNIFIED_HANDLER)
+        nvicEnableVector(CAN1_UNIFIED_IRQn,  UAVCAN_STM32_IRQ_PRIORITY_MASK);
+#else
         nvicEnableVector(CAN1_TX_IRQn,  UAVCAN_STM32_IRQ_PRIORITY_MASK);
         nvicEnableVector(CAN1_RX0_IRQn, UAVCAN_STM32_IRQ_PRIORITY_MASK);
         nvicEnableVector(CAN1_RX1_IRQn, UAVCAN_STM32_IRQ_PRIORITY_MASK);
+#endif
 # if UAVCAN_STM32_NUM_IFACES > 1
         nvicEnableVector(CAN2_TX_IRQn,  UAVCAN_STM32_IRQ_PRIORITY_MASK);
         nvicEnableVector(CAN2_RX0_IRQn, UAVCAN_STM32_IRQ_PRIORITY_MASK);
@@ -1163,11 +1172,23 @@ static int can2_irq(const int irq, void*)
 
 #else // UAVCAN_STM32_NUTTX
 
-#if !defined(CAN1_TX_IRQHandler) ||\
+#if !defined(CAN1_UNIFIED_HANDLER) && (!defined(CAN1_TX_IRQHandler) ||\
     !defined(CAN1_RX0_IRQHandler) ||\
-    !defined(CAN1_RX1_IRQHandler)
+    !defined(CAN1_RX1_IRQHandler))
 # error "Misconfigured build"
 #endif
+
+#if defined(CAN1_UNIFIED_HANDLER)
+UAVCAN_STM32_IRQ_HANDLER(CAN1_UNIFIED_HANDLER);
+UAVCAN_STM32_IRQ_HANDLER(CAN1_UNIFIED_HANDLER)
+{
+  UAVCAN_STM32_IRQ_PROLOGUE();
+  uavcan_stm32::handleTxInterrupt(0);
+  uavcan_stm32::handleRxInterrupt(0, 0);
+  uavcan_stm32::handleRxInterrupt(0, 1);
+  UAVCAN_STM32_IRQ_EPILOGUE();
+}
+#else
 
 UAVCAN_STM32_IRQ_HANDLER(CAN1_TX_IRQHandler);
 UAVCAN_STM32_IRQ_HANDLER(CAN1_TX_IRQHandler)
@@ -1192,6 +1213,7 @@ UAVCAN_STM32_IRQ_HANDLER(CAN1_RX1_IRQHandler)
     uavcan_stm32::handleRxInterrupt(0, 1);
     UAVCAN_STM32_IRQ_EPILOGUE();
 }
+#endif
 
 # if UAVCAN_STM32_NUM_IFACES > 1
 
